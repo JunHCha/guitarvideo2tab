@@ -1,0 +1,39 @@
+{
+  "last_synced_commit": "HEAD",
+  "synced_at": "2026-05-08T00:00:00Z",
+  "documents": {
+    "architecture.md": {
+      "description": "전체 멀티모달 파이프라인 구조, 모듈별 역할, 데이터 흐름",
+      "last_updated": "2026-05-08"
+    },
+    "source-index.md": {
+      "description": "계획된 핵심 파일/함수 인덱스 (구현 전 초안)",
+      "last_updated": "2026-05-08"
+    },
+    "coding-style.md": {
+      "description": "기술 스택, 라이브러리, 코딩 규칙, 프로젝트 구조",
+      "last_updated": "2026-05-08"
+    },
+    "features.md": {
+      "description": "F1~F9 핵심 기능, 지원 표현 기법 목록, 비기능 요구사항",
+      "last_updated": "2026-05-08"
+    },
+    "build-test.md": {
+      "description": "환경 설정, uv 패키지 관리, 실행/테스트 명령, 데이터셋 준비",
+      "last_updated": "2026-05-08"
+    }
+  },
+  "decisions": {
+    "count": 1,
+    "last_id": 1,
+    "index": [
+      {
+        "id": "001",
+        "file": "001-multimodal-late-fusion-pipeline.md",
+        "title": "멀티모달 Late Fusion 파이프라인 채택",
+        "status": "Accepted",
+        "date": "2026-05-08"
+      }
+    ]
+  }
+}
