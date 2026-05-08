@@ -1,9 +1,9 @@
 """Core data types shared across the pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Literal
-
 
 TechniqueLabel = Literal[
     "bend",
