@@ -1,13 +1,13 @@
 {
-  "last_synced_commit": "e5ff632d0a651df9cc5c3497fe9bae57a11eae25",
-  "synced_at": "2026-05-11T11:49:31Z",
+  "last_synced_commit": "6695437a0e09cababa06350cdde16562e00885e6",
+  "synced_at": "2026-05-11T12:39:52Z",
   "documents": {
     "architecture.md": {
       "description": "전체 멀티모달 파이프라인 구조, 모듈별 역할, 데이터 흐름",
       "last_updated": "2026-05-08"
     },
     "source-index.md": {
-      "description": "구현 진행 상태 (✅/🟡/❌) 포함 핵심 파일/함수 인덱스",
+      "description": "12개 핵심 모듈 모두 구현 완료 상태 + 104 tests 인덱스",
       "last_updated": "2026-05-11"
     },
     "coding-style.md": {
