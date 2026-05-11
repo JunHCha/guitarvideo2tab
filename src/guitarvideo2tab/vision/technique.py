@@ -8,17 +8,17 @@ Mitsou 2023 pre-trained weights are not yet publicly released.
   list — no labels are produced.  This is the expected behaviour for the
   current inference shell and will be updated once the weights are available.
 
-* If ``weights_path`` is supplied the classifier loads the model via
-  ``torch.load``, slides a ``window_ms``-wide window over the hand-keypoint
-  time-series, builds a ``(window_len, 21*2*2)`` feature tensor per window,
-  passes it through the model, and decodes the per-window argmax into a
-  ``TechniqueAnnotation``.
+* If ``weights_path`` is supplied the classifier loads the **state-dict**
+  (``weights_only=True``) via ``model_factory``, slides a ``window_ms``-wide
+  window over the hand-keypoint time-series, builds a ``(window_len, 21*2*2)``
+  feature tensor per window, passes it through the model, and decodes the
+  per-window argmax into a ``TechniqueAnnotation``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import get_args
+from typing import Callable, get_args
 
 import numpy as np
 import torch
@@ -26,7 +26,7 @@ import torch
 from ..models import HandKeypoints, TechniqueAnnotation, TechniqueLabel
 
 # Ordered label list derived from the Literal type — index == logit position.
-_LABELS: list[str] = list(get_args(TechniqueLabel))
+_LABELS: list[TechniqueLabel] = list(get_args(TechniqueLabel))  # type: ignore[assignment]
 _N_KEYPOINTS = 21
 _COORDS = 2  # (x, y)
 _HANDS = 2   # left + right
@@ -62,20 +62,20 @@ class VisionTechniqueClassifier:
     Parameters
     ----------
     weights_path:
-        Path to a ``torch.save``'d ``nn.Module``.  When ``None`` (default)
-        ``classify`` returns ``[]``; the fallback is intentional until Mitsou
-        2023 model weights become available.
+        Path to a ``torch.save``'d state-dict (``nn.Module.state_dict()``).
+        When ``None`` (default) ``classify`` returns ``[]``; the fallback is
+        intentional until Mitsou 2023 model weights become available.
+    model_factory:
+        Callable that returns a fresh ``nn.Module`` instance.  **Required**
+        when ``weights_path`` is not ``None`` — ``_load_model`` calls this to
+        instantiate the architecture before loading the state-dict.
     window_ms:
         Sliding-window width in milliseconds (default 300 ms).
-    model_arch:
-        Informational tag ("tcn" or "transformer").  The actual architecture
-        is determined by the serialised ``weights_path`` module; this field is
-        not used at runtime.
     """
 
     weights_path: Path | None = None
+    model_factory: Callable[[], torch.nn.Module] | None = None
     window_ms: int = 300
-    model_arch: str = "tcn"
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -83,9 +83,16 @@ class VisionTechniqueClassifier:
 
     def _load_model(self) -> torch.nn.Module:
         assert self.weights_path is not None
-        model: torch.nn.Module = torch.load(
-            self.weights_path, map_location="cpu"
+        if self.model_factory is None:
+            raise ValueError(
+                "model_factory must be provided when weights_path is set. "
+                "Supply a callable that returns an nn.Module instance."
+            )
+        state_dict = torch.load(
+            self.weights_path, map_location="cpu", weights_only=True
         )
+        model = self.model_factory()
+        model.load_state_dict(state_dict)
         model.eval()
         return model
 
@@ -95,6 +102,8 @@ class VisionTechniqueClassifier:
         """Return (start_idx, end_idx) pairs covering hands with window_ms."""
         if not hands:
             return []
+        # Ensure frames are in ascending timestamp order before slicing.
+        hands = sorted(hands, key=lambda h: h.timestamp)
         window_s = self.window_ms / 1000.0
         t_start = hands[0].timestamp
         t_end = hands[-1].timestamp
@@ -150,16 +159,23 @@ class VisionTechniqueClassifier:
             tensor = torch.from_numpy(feat).unsqueeze(0)
 
             with torch.no_grad():
-                logits = model(tensor)  # (1, n_classes) or (1, T, n_classes)
-
-            # Collapse temporal dimension if present
-            if logits.dim() == 3:
-                logits = logits.mean(dim=1)  # (1, n_classes)
+                logits = model(tensor)
+                # Expected output shapes:
+                #   (B, C)      — model already collapses the time axis
+                #   (B, T, C)   — per-frame logits; we mean-pool to (B, C)
+                # Any other rank indicates an incompatible model and is an error.
+                if logits.dim() == 3:
+                    logits = logits.mean(dim=1)  # (B, T, C) → (B, C)
+                elif logits.dim() != 2:
+                    raise ValueError(
+                        f"Model output has unexpected rank {logits.dim()}. "
+                        "Expected 2 (B, C) or 3 (B, T, C)."
+                    )
 
             probs = torch.softmax(logits, dim=-1)
             best_idx = int(probs.argmax(dim=-1).item())
             confidence = float(probs[0, best_idx].item())
-            label: TechniqueLabel = _LABELS[best_idx]  # type: ignore[assignment]
+            label: TechniqueLabel = _LABELS[best_idx]
 
             t0 = window_frames[0].timestamp
             t1 = window_frames[-1].timestamp

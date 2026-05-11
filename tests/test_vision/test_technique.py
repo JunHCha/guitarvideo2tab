@@ -33,15 +33,35 @@ def _make_hands(n: int = 10, dt: float = 0.033) -> list[HandKeypoints]:
 
 
 def _fake_model(label_idx: int) -> MagicMock:
-    """Return a mock nn.Module whose __call__ returns fixed logits."""
+    """Return a mock nn.Module whose __call__ returns fixed logits (B, C)."""
     logits = torch.zeros(1, _N_CLASSES)
     logits[0, label_idx] = 10.0  # argmax → label_idx
 
     model = MagicMock(spec=torch.nn.Module)
     model.eval.return_value = model
+    model.load_state_dict.return_value = None
     model.return_value = logits
     model.__call__ = MagicMock(return_value=logits)
     return model
+
+
+def _make_state_dict_fixture(tmp_path: Path, label_idx: int, monkeypatch: pytest.MonkeyPatch):
+    """Write a fake state-dict file and patch torch.load + model_factory."""
+    fake_weights = tmp_path / "model.pt"
+    fake_state_dict: dict = {}
+    fake_weights.write_bytes(b"")  # sentinel — torch.load is patched
+
+    fake_model = _fake_model(label_idx)
+
+    monkeypatch.setattr(
+        "guitarvideo2tab.vision.technique.torch.load",
+        lambda path, map_location=None, weights_only=False: fake_state_dict,
+    )
+
+    def factory() -> torch.nn.Module:
+        return fake_model
+
+    return fake_weights, factory, fake_model
 
 
 # ---------------------------------------------------------------------------
@@ -56,25 +76,20 @@ def test_no_weights_returns_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: monkeypatched torch.load → list of TechniqueAnnotation
+# Test 2: model_factory + state_dict path → list of TechniqueAnnotation
 # ---------------------------------------------------------------------------
 
 def test_with_fake_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     label_idx = 3  # e.g. "pull-off"
     expected_label = _LABELS[label_idx]
 
-    fake_weights = tmp_path / "model.pt"
-    fake_weights.write_bytes(b"")  # empty sentinel file
+    fake_weights, factory, _ = _make_state_dict_fixture(tmp_path, label_idx, monkeypatch)
 
-    fake_model = _fake_model(label_idx)
-
-    # Patch torch.load so no real file is read
-    monkeypatch.setattr(
-        "guitarvideo2tab.vision.technique.torch.load",
-        lambda path, map_location=None: fake_model,
+    clf = VisionTechniqueClassifier(
+        weights_path=fake_weights,
+        model_factory=factory,
+        window_ms=300,
     )
-
-    clf = VisionTechniqueClassifier(weights_path=fake_weights, window_ms=300)
     hands = _make_hands(n=20, dt=0.020)  # 20 frames × 20ms = 400ms → 2 windows
     result = clf.classify(hands)
 
@@ -96,14 +111,50 @@ def test_with_fake_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
 # ---------------------------------------------------------------------------
 
 def test_empty_hands_returns_empty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_weights, factory, _ = _make_state_dict_fixture(tmp_path, 0, monkeypatch)
+
+    clf = VisionTechniqueClassifier(weights_path=fake_weights, model_factory=factory)
+    result = clf.classify([])
+    assert result == [], "Expected empty list for empty hands input"
+
+
+# ---------------------------------------------------------------------------
+# Test 4: no model_factory with weights_path → ValueError
+# ---------------------------------------------------------------------------
+
+def test_missing_factory_raises(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_weights = tmp_path / "model.pt"
     fake_weights.write_bytes(b"")
 
     monkeypatch.setattr(
         "guitarvideo2tab.vision.technique.torch.load",
-        lambda path, map_location=None: _fake_model(0),
+        lambda path, map_location=None, weights_only=False: {},
     )
 
-    clf = VisionTechniqueClassifier(weights_path=fake_weights)
-    result = clf.classify([])
-    assert result == [], "Expected empty list for empty hands input"
+    clf = VisionTechniqueClassifier(weights_path=fake_weights, model_factory=None)
+    with pytest.raises(ValueError, match="model_factory"):
+        clf.classify(_make_hands(5))
+
+
+# ---------------------------------------------------------------------------
+# Test 5: unsorted hands → still works (timestamp sort guard)
+# ---------------------------------------------------------------------------
+
+def test_unsorted_hands_are_handled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    label_idx = 1
+    fake_weights, factory, _ = _make_state_dict_fixture(tmp_path, label_idx, monkeypatch)
+
+    clf = VisionTechniqueClassifier(
+        weights_path=fake_weights,
+        model_factory=factory,
+        window_ms=300,
+    )
+    # Deliberately shuffle timestamps
+    hands = _make_hands(n=10, dt=0.020)
+    hands_shuffled = list(reversed(hands))
+    result = clf.classify(hands_shuffled)
+
+    assert isinstance(result, list)
+    # Should produce same result as sorted input (no crash, valid labels)
+    for ann in result:
+        assert ann.technique in _LABELS
