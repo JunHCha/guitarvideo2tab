@@ -22,6 +22,8 @@ class FretboardDetector:
         model = YOLO(str(self.weights_path) if self.weights_path is not None else "yolov8n-obb.pt")
 
         cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise FileNotFoundError(f"Cannot open video: {video_path}")
         fps = cap.get(cv2.CAP_PROP_FPS) or 1.0
 
         frames: list[FretboardFrame] = []
@@ -43,7 +45,7 @@ class FretboardDetector:
         return frames
 
     def _process_frame(self, model: YOLO, frame: np.ndarray, timestamp: float) -> FretboardFrame:
-        results = model(frame)
+        results = model(frame, verbose=False)
 
         obb = results[0].obb if results and results[0].obb is not None else None
 
@@ -64,6 +66,9 @@ class FretboardDetector:
         corners = corners_tensor.cpu().numpy().astype(np.float32)
 
         homography_matrix, _ = cv2.findHomography(corners, _DST_CANONICAL)
+
+        if homography_matrix is None:
+            return FretboardFrame(timestamp=timestamp, homography=None, corners=None, visible=False)
 
         return FretboardFrame(
             timestamp=timestamp,

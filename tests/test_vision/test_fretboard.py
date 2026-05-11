@@ -60,7 +60,7 @@ class FakeYOLO:
         self.weights = weights
         self._results: list = []  # injected per-test
 
-    def __call__(self, frame: np.ndarray):
+    def __call__(self, frame: np.ndarray, **kwargs):
         return self._results.pop(0) if self._results else [_make_fake_result(None)]
 
 
@@ -71,6 +71,9 @@ def _make_fake_cap(frames: list[np.ndarray], fps: float = _FPS):
         def __init__(self, path: str) -> None:
             self._frames = list(frames)
             self._fps = fps
+
+        def isOpened(self) -> bool:  # noqa: N802
+            return True
 
         def get(self, prop_id: int) -> float:
             import cv2
@@ -189,7 +192,7 @@ def test_detect_timestamp_computed_as_frame_idx_over_fps(monkeypatch):
             self.weights = weights
             self._queue = list(per_frame_results)
 
-        def __call__(self, frame: np.ndarray):
+        def __call__(self, frame: np.ndarray, **kwargs):
             return self._queue.pop(0)
 
     monkeypatch.setattr("guitarvideo2tab.vision.fretboard.YOLO", SequentialYOLO)
@@ -262,6 +265,54 @@ def test_detect_default_weights_when_none(monkeypatch):
     detector.detect(Path("dummy.mp4"))
 
     assert captured_weights == ["yolov8n-obb.pt"]
+
+
+def test_detect_raises_if_video_cannot_be_opened(monkeypatch):
+    """cv2.VideoCapture.isOpened() == False → FileNotFoundError."""
+
+    class ClosedCap:
+        def __init__(self, path: str) -> None:
+            pass
+
+        def isOpened(self) -> bool:  # noqa: N802
+            return False
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr("guitarvideo2tab.vision.fretboard.cv2.VideoCapture", ClosedCap)
+    monkeypatch.setattr("guitarvideo2tab.vision.fretboard.YOLO", lambda w: FakeYOLO(w))
+
+    detector = FretboardDetector()
+    with pytest.raises(FileNotFoundError, match="Cannot open video"):
+        detector.detect(Path("nonexistent.mp4"))
+
+
+def test_detect_invisible_frame_when_homography_is_none(monkeypatch):
+    """cv2.findHomography returning None → FretboardFrame(visible=False, homography=None)."""
+    fake_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    fake_yolo = FakeYOLO("yolov8n-obb.pt")
+    fake_yolo._results = [[_make_fake_result(0.9)]]
+
+    monkeypatch.setattr("guitarvideo2tab.vision.fretboard.YOLO", lambda w: fake_yolo)
+    monkeypatch.setattr(
+        "guitarvideo2tab.vision.fretboard.cv2.VideoCapture",
+        _make_fake_cap([fake_frame]),
+    )
+    monkeypatch.setattr(
+        "guitarvideo2tab.vision.fretboard.cv2.findHomography",
+        lambda src, dst: (None, None),
+    )
+
+    detector = FretboardDetector(confidence_threshold=0.5)
+    results = detector.detect(Path("dummy.mp4"))
+
+    assert len(results) == 1
+    frame = results[0]
+    assert frame.visible is False
+    assert frame.homography is None
+    assert frame.corners is None
 
 
 def test_homography_is_list_of_lists(monkeypatch):
