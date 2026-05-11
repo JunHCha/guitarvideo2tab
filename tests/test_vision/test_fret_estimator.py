@@ -54,8 +54,9 @@ def _make_fretboard(
 # ---------------------------------------------------------------------------
 # Test 1: identity homography, fingertip at (0.5, 0.5) → fret=12, string=3
 #         With num_frets=24, num_strings=6:
-#           fret = int(0.5 * 24) = 12
-#           string = round(0.5 * 5) + 1 = round(2.5) + 1 = 3 + 1 = 4 (banker's rounding)
+#           fret = min(int(0.5 * 25), 24) = min(12, 24) = 12
+#           string = round(0.5 * 5) + 1 = round(2.5) + 1 = 2 + 1 = 3
+#           (Python built-in round() uses banker's rounding: round(2.5) == 2)
 # ---------------------------------------------------------------------------
 
 def test_identity_homography_center() -> None:
@@ -69,26 +70,27 @@ def test_identity_homography_center() -> None:
     assert len(results) == 4
     for pos in results:
         assert pos.timestamp == 0.0
+        # fret: min(int(0.5 * 25), 24) = 12
         assert pos.fret == 12
-        # round(0.5 * 5) = round(2.5) — Python banker's rounding gives 2; +1 = 3
-        # OR plain round gives 3; +1 = 4 depending on implementation.
-        # Our impl uses numpy round which uses banker's rounding: round(2.5) = 2 → string=3
-        # Accept either 3 or 4 to be resilient, but verify exactly what we emit.
-        assert pos.string in (3, 4)
+        # string: round(0.5 * 5) + 1 = round(2.5) + 1 = 2 + 1 = 3
+        # Python banker's rounding: round(2.5) == 2 (rounds to even)
+        assert pos.string == 3
         assert pos.confidence == 1.0
 
 
 def test_identity_homography_center_exact_string() -> None:
-    """Exact string value: numpy round(2.5) = 2 (banker's) → string = 3."""
-    import numpy as np
+    """Exact string value: round(2.5) = 2 (banker's rounding) → string = 3.
 
+    Fret formula (uniform binning, num_frets+1 bins):
+      fret = min(int(u * (num_frets + 1)), num_frets)
+           = min(int(0.5 * 25), 24) = 12
+    """
     estimator = FretEstimator(num_strings=6, num_frets=24)
     hand = _make_hand(0.5, 0.5)
     fb = _make_fretboard()
     results = estimator.estimate([hand], [fb])
-    expected_string = int(np.clip(round(0.5 * 5) + 1, 1, 6))
     for pos in results:
-        assert pos.string == expected_string
+        assert pos.string == 3
         assert pos.fret == 12
 
 
@@ -172,7 +174,7 @@ def test_clamping_large_coords() -> None:
 
     assert len(results) == 4
     for pos in results:
-        # u=1.0 → fret = int(1.0 * 24) = 24
+        # u=1.0 → fret = min(int(1.0 * 25), 24) = min(25, 24) = 24
         assert pos.fret == 24
         # v=1.0 → string = round(1.0 * 5) + 1 = 6
         assert pos.string == 6

@@ -70,6 +70,17 @@ class FretEstimator:
                 for tip_idx in _FINGERTIP_INDICES:
                     x, y = hand.left_hand[tip_idx]
                     u, v = self._apply_homography(hmat, x, y)
+                    if u is None or v is None:
+                        # Degenerate homography point — emit zero-confidence entry
+                        results.append(
+                            FretPosition(
+                                timestamp=hand.timestamp,
+                                string=1,
+                                fret=0,
+                                confidence=0.0,
+                            )
+                        )
+                        continue
                     string, fret = self._map_to_string_fret(u, v)
                     results.append(
                         FretPosition(
@@ -86,6 +97,17 @@ class FretEstimator:
             for tip_idx in _FINGERTIP_INDICES:
                 x, y = hand.left_hand[tip_idx]
                 u, v = self._apply_homography(hmat, x, y)
+                if u is None or v is None:
+                    # Degenerate homography point — emit zero-confidence entry
+                    results.append(
+                        FretPosition(
+                            timestamp=hand.timestamp,
+                            string=1,
+                            fret=0,
+                            confidence=0.0,
+                        )
+                    )
+                    continue
                 string, fret = self._map_to_string_fret(u, v)
                 results.append(
                     FretPosition(
@@ -100,15 +122,18 @@ class FretEstimator:
 
     def _apply_homography(
         self, hmat: np.ndarray, x: float, y: float
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float] | tuple[None, None]:
         """Apply 3x3 homography matrix to image point (x, y).
 
         Returns canonical (u, v) clamped to [0, 1].
+        Returns (None, None) when the projective weight w is near zero
+        (degenerate or behind-camera point).  Callers must check for this
+        sentinel and emit a FretPosition with confidence=0.0.
         """
         p = hmat @ np.array([x, y, 1.0], dtype=np.float64)
         w = p[2]
         if abs(w) < 1e-10:
-            w = 1e-10
+            return None, None
         u = float(np.clip(p[0] / w, 0.0, 1.0))
         v = float(np.clip(p[1] / w, 0.0, 1.0))
         return u, v
@@ -116,9 +141,16 @@ class FretEstimator:
     def _map_to_string_fret(self, u: float, v: float) -> tuple[int, int]:
         """Map canonical (u, v) in [0,1] to (string, fret).
 
+        Convention: num_frets=24 means frets 0..24 (25 valid values).
+        The fretboard width [0, 1] is divided into num_frets+1 equal bins:
+          fret 0  (open/nut) ← u in [0,       1/25)
+          fret 1             ← u in [1/25,    2/25)
+          …
+          fret 24 (last)     ← u in [24/25,   1.0]
+
         u → fret: 0 = open/nut, num_frets = highest fret
         v → string: 1 = lowest string index, num_strings = highest
         """
-        fret = int(np.clip(int(u * self.num_frets), 0, self.num_frets))
+        fret = min(int(u * (self.num_frets + 1)), self.num_frets)
         string = int(np.clip(round(v * (self.num_strings - 1)) + 1, 1, self.num_strings))
         return string, fret
