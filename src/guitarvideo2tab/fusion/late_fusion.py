@@ -18,6 +18,14 @@ Vision technique timing
 VisionTechniqueClassifier stores the analysis window in
 ``params["window_start"]`` and ``params["window_end"]`` (floats, seconds).
 Overlap with [event.start_time, event.end_time] is used for matching.
+
+Occlusion fallback (TODO)
+-------------------------
+When ``_resolve_string_fret`` finds no FretPosition candidate it currently
+returns ``(-1, -1)`` to signal an unresolved note.  ADR-001 D4 mandates a
+fallback to audio prior + hand position estimate in that case.  This fallback
+is **not yet implemented**.  Downstream consumers MUST filter out ``string=-1``
+notes before rendering tabs.  Tracked as a gap against ADR-001 D4.
 """
 from __future__ import annotations
 
@@ -112,6 +120,8 @@ class LateFusion:
         ]
 
         if not candidates:
+            # TODO: ADR-001 D4 occlusion fallback (audio prior + hand position)
+            # not yet implemented — downstream must filter string==-1 notes.
             return -1, -1
 
         # Closest by time, then highest confidence on tie
@@ -193,15 +203,18 @@ class LateFusion:
     ) -> TechniqueAnnotation:
         """Fuse audio and vision annotations into one."""
         agree = audio.technique == vision.technique
-        max_conf = max(audio.confidence, vision.confidence)
 
-        if agree and max_conf >= self.confidence_high:
-            # High-confidence agreement → confirm
+        if (
+            agree
+            and audio.confidence >= self.confidence_high
+            and vision.confidence >= self.confidence_high
+        ):
+            # D4: both sources HIGH + agreement → confirmed, average confidence
             return TechniqueAnnotation(
-                technique=vision.technique,
+                technique=audio.technique,
                 confidence=(audio.confidence + vision.confidence) / 2,
                 source="fusion",
-                params={},
+                params={"audio_conf": audio.confidence, "vision_conf": vision.confidence},
             )
 
         # Disagree OR low confidence → vision wins (direct observation)

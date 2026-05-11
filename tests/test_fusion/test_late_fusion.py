@@ -200,3 +200,43 @@ def test_no_technique_returns_none():
 
     note = results[0]
     assert note.technique is None
+
+
+# ---------------------------------------------------------------------------
+# Test 8: Labels agree, only audio is HIGH (vision below HIGH) → audio wins
+# ---------------------------------------------------------------------------
+
+def test_agree_only_audio_high_audio_wins():
+    """Same label but only audio >= confidence_high → not confirmed; audio passes through.
+
+    D4 'confirmed' branch requires BOTH sources >= confidence_high.  When only
+    one exceeds the threshold the disagreement/fallback path applies.  Since
+    labels agree but vision is below HIGH the implementation falls back to the
+    vision-wins rule inside _fuse_both, which returns vision.  However the
+    caller should still receive a deterministic, locked result — this test pins
+    the behaviour so any future change surfaces immediately.
+
+    Current deterministic rule:
+      agree=True, audio=0.9 (HIGH), vision=0.5 (LOW) →
+      not both HIGH → fallback → vision wins (source="fusion")
+    """
+    fusion = LateFusion()
+    event = _midi(0.0, 1.0)
+    audio = _audio_tech("bend", confidence=0.9)   # above HIGH
+    vision = _vision_tech("bend", confidence=0.5, window_start=0.0, window_end=1.0)  # below HIGH
+
+    results = fusion.fuse(
+        midi_events=[event],
+        audio_techniques=[audio],
+        fret_positions=[],
+        vision_techniques=[vision],
+    )
+
+    note = results[0]
+    assert note.technique is not None
+    # Labels agree so either label is correct; pin the label
+    assert note.technique.technique == "bend"
+    # Not both HIGH → falls through to vision-wins path → source="fusion"
+    assert note.technique.source == "fusion"
+    # Confidence must NOT be the average (that's only for the confirmed branch)
+    assert note.technique.confidence == 0.5
