@@ -6,7 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "yt-dlp",
     "ffmpeg-python",
-    "demucs",
+    "demucs>=4.0.0",
     "basic-pitch",
     "opencv-python",
     "ultralytics",

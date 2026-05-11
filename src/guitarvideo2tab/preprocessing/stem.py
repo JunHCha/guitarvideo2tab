@@ -17,7 +17,12 @@ def separate_guitar_stem(audio_path: Path, output_dir: Path) -> Path:
     Raises:
         KeyError: If the model did not produce a ``"guitar"`` stem.
     """
-    from demucs.api import Separator, save_audio  # lazy import — keeps tests fast
+    try:
+        from demucs.api import Separator, save_audio  # lazy import — keeps tests fast
+    except ModuleNotFoundError as e:
+        raise ModuleNotFoundError(
+            "demucs.api requires demucs>=4.0.0. Run: uv sync"
+        ) from e
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
