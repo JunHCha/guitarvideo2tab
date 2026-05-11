@@ -53,11 +53,15 @@ _DUMMY_FRAME = np.zeros((10, 10, 3), dtype=np.uint8)
 class FakeCapture:
     """Fake cv2.VideoCapture that yields a fixed list of frames."""
 
-    def __init__(self, frames: list, fps: float = 30.0) -> None:
+    def __init__(self, frames: list, fps: float = 30.0, opened: bool = True) -> None:
         self._frames = list(frames)
         self._fps = fps
         self._idx = 0
         self.released = False
+        self._opened = opened
+
+    def isOpened(self) -> bool:  # noqa: N802
+        return self._opened
 
     def get(self, prop_id: int) -> float:
         import cv2
@@ -105,9 +109,9 @@ class FakeHands:
 # Patch helpers
 # ---------------------------------------------------------------------------
 
-def _patch_cv2(monkeypatch, frames, fps: float = 30.0) -> FakeCapture:
+def _patch_cv2(monkeypatch, frames, fps: float = 30.0, opened: bool = True) -> FakeCapture:
     """Replace cv2.VideoCapture and cv2.cvtColor in the hands module."""
-    fake_cap = FakeCapture(frames, fps=fps)
+    fake_cap = FakeCapture(frames, fps=fps, opened=opened)
     monkeypatch.setattr(hands_module.cv2, "VideoCapture", lambda path: fake_cap)
     monkeypatch.setattr(hands_module.cv2, "cvtColor", lambda frame, code: frame)
     return fake_cap
@@ -121,7 +125,11 @@ def _patch_hands_factory(
     """Replace _make_hands_solution so no real mediapipe model is created."""
     fake = FakeHands(per_frame_results)
 
-    def fake_factory(min_detection_confidence: float, min_tracking_confidence: float):
+    def fake_factory(
+        min_detection_confidence: float,
+        min_tracking_confidence: float,
+        model_asset_path=None,
+    ):
         if captured_kwargs is not None:
             captured_kwargs["min_detection_confidence"] = min_detection_confidence
             captured_kwargs["min_tracking_confidence"] = min_tracking_confidence
@@ -252,3 +260,32 @@ def test_confidence_passed_to_factory(monkeypatch):
 
     assert captured.get("min_detection_confidence") == pytest.approx(0.7)
     assert captured.get("min_tracking_confidence") == pytest.approx(0.8)
+
+
+def test_video_capture_not_opened_raises(monkeypatch):
+    """VideoCapture.isOpened() == False must raise FileNotFoundError."""
+    _patch_cv2(monkeypatch, [], fps=30.0, opened=False)
+    _patch_hands_factory(monkeypatch, [])
+
+    with pytest.raises(FileNotFoundError):
+        HandTracker().track(Path("nonexistent.mp4"))
+
+
+def test_tasks_adapter_no_model_path_raises(monkeypatch):
+    """_TasksHandsAdapter with model_asset_path=None must raise FileNotFoundError."""
+    # Simulate legacy API being unavailable so the adapter code path is reached.
+    import guitarvideo2tab.vision.hands as hm
+
+    def fake_make(min_detection_confidence, min_tracking_confidence, model_asset_path=None):
+        # Bypass legacy attempt and go directly to adapter
+        return hm._TasksHandsAdapter(
+            min_detection_confidence=min_detection_confidence,
+            min_tracking_confidence=min_tracking_confidence,
+            model_asset_path=model_asset_path,
+        )
+
+    monkeypatch.setattr(hm, "_make_hands_solution", fake_make)
+    _patch_cv2(monkeypatch, [_DUMMY_FRAME], fps=30.0)
+
+    with pytest.raises(FileNotFoundError, match="model_asset_path"):
+        HandTracker(model_asset_path=None).track(Path("dummy.mp4"))

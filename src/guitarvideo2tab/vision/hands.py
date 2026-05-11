@@ -14,6 +14,7 @@ from ..models import HandKeypoints
 def _make_hands_solution(
     min_detection_confidence: float,
     min_tracking_confidence: float,
+    model_asset_path: Path | None = None,
 ):
     """Create and return a mediapipe Hands-compatible object.
 
@@ -31,13 +32,14 @@ def _make_hands_solution(
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
-    except AttributeError:
+    except (AttributeError, ImportError, ModuleNotFoundError):
         pass
 
     # Modern Tasks API (mediapipe >= 0.10)
     return _TasksHandsAdapter(
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
+        model_asset_path=model_asset_path,
     )
 
 
@@ -48,14 +50,19 @@ class _TasksHandsAdapter:
         self,
         min_detection_confidence: float,
         min_tracking_confidence: float,
+        model_asset_path: Path | None = None,
     ) -> None:
+        if model_asset_path is None:
+            raise FileNotFoundError(
+                "MediaPipe Tasks API requires a .task model file. "
+                "Set HandTracker(model_asset_path=...)"
+            )
+
         vision = mp.tasks.vision
         base_options = mp.tasks.BaseOptions  # type: ignore[attr-defined]
 
-        # Try to create without a model file first (will fail at runtime);
-        # real usage requires a downloaded .task model file.
         options = vision.HandLandmarkerOptions(
-            base_options=base_options(model_asset_path=""),
+            base_options=base_options(model_asset_path=str(model_asset_path)),
             running_mode=vision.RunningMode.IMAGE,
             num_hands=2,
             min_hand_detection_confidence=min_detection_confidence,
@@ -102,14 +109,23 @@ def _adapt_tasks_result(tasks_result) -> SimpleNamespace:
 class HandTracker:
     min_detection_confidence: float = 0.5
     min_tracking_confidence: float = 0.5
+    model_asset_path: Path | None = None
 
     def track(self, video_path: Path) -> list[HandKeypoints]:
         hands = _make_hands_solution(
             self.min_detection_confidence,
             self.min_tracking_confidence,
+            self.model_asset_path,
         )
         cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            raise FileNotFoundError(f"Cannot open video file: {video_path}")
         fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            raise ValueError(
+                f"Invalid FPS value ({fps}) reported by VideoCapture for {video_path}. "
+                "Ensure the file is a valid video."
+            )
 
         results_list: list[HandKeypoints] = []
         frame_idx = 0
@@ -139,7 +155,7 @@ class HandTracker:
                         elif label == "Right":
                             right_hand = keypoints
 
-                timestamp = frame_idx / fps if fps > 0 else 0.0
+                timestamp = frame_idx / fps
                 results_list.append(
                     HandKeypoints(
                         timestamp=timestamp,
