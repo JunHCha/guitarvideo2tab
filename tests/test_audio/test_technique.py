@@ -79,7 +79,10 @@ def test_classify_with_weights_returns_annotations(monkeypatch, tmp_path):
     fake_weights_file = tmp_path / "fake_weights.pt"
     fake_weights_file.write_bytes(b"fake")  # 실제 내용 불필요 (torch.load 패치)
 
-    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_model)
+    # torch.load 는 state_dict 를 반환하도록 패치; model_factory 는 fake_model 반환
+    fake_state_dict: dict = {}
+    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_state_dict)
+    fake_model.load_state_dict = MagicMock()
 
     # 오디오 로딩 패치
     audio_array = _make_fake_audio()
@@ -91,7 +94,10 @@ def test_classify_with_weights_returns_annotations(monkeypatch, tmp_path):
         _make_midi_event(pitch=67, start_time=0.4, end_time=0.6),
     ]
 
-    classifier = TARTTechniqueClassifier(weights_path=fake_weights_file)
+    classifier = TARTTechniqueClassifier(
+        weights_path=fake_weights_file,
+        model_factory=lambda: fake_model,
+    )
     result = classifier.classify(events, Path("fake.wav"))
 
     # 길이가 입력과 일치해야 한다
@@ -111,12 +117,17 @@ def test_classify_with_weights_source_is_audio(monkeypatch, tmp_path):
     fake_weights_file = tmp_path / "w.pt"
     fake_weights_file.write_bytes(b"x")
 
-    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_model)
+    fake_state_dict: dict = {}
+    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_state_dict)
+    fake_model.load_state_dict = MagicMock()
     audio_array = _make_fake_audio()
     monkeypatch.setattr(technique_mod, "_load_audio", lambda path: (audio_array, 22050))
 
     events = [_make_midi_event() for _ in range(5)]
-    classifier = TARTTechniqueClassifier(weights_path=fake_weights_file)
+    classifier = TARTTechniqueClassifier(
+        weights_path=fake_weights_file,
+        model_factory=lambda: fake_model,
+    )
     result = classifier.classify(events, Path("fake.wav"))
 
     assert all(ann.source == "audio" for ann in result)
@@ -133,7 +144,9 @@ def test_classify_with_patched_audio_load(monkeypatch, tmp_path):
     fake_weights_file = tmp_path / "w2.pt"
     fake_weights_file.write_bytes(b"y")
 
-    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_model)
+    fake_state_dict: dict = {}
+    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_state_dict)
+    fake_model.load_state_dict = MagicMock()
 
     # 실제 파일 대신 합성 배열 주입
     synthetic_audio = _make_fake_audio(sr=16000, duration=2.0)
@@ -144,7 +157,10 @@ def test_classify_with_patched_audio_load(monkeypatch, tmp_path):
         _make_midi_event(pitch=71, start_time=0.5, end_time=0.8),
     ]
 
-    classifier = TARTTechniqueClassifier(weights_path=fake_weights_file)
+    classifier = TARTTechniqueClassifier(
+        weights_path=fake_weights_file,
+        model_factory=lambda: fake_model,
+    )
     result = classifier.classify(events, Path("no_real_file.wav"))
 
     assert len(result) == 2
@@ -188,9 +204,14 @@ def test_classify_empty_events_returns_empty(monkeypatch, tmp_path):
     fake_weights_file = tmp_path / "w3.pt"
     fake_weights_file.write_bytes(b"z")
 
-    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_model)
+    fake_state_dict: dict = {}
+    monkeypatch.setattr(torch, "load", lambda path, **kwargs: fake_state_dict)
+    fake_model.load_state_dict = MagicMock()
     monkeypatch.setattr(technique_mod, "_load_audio", lambda path: (_make_fake_audio(), 22050))
 
-    classifier = TARTTechniqueClassifier(weights_path=fake_weights_file)
+    classifier = TARTTechniqueClassifier(
+        weights_path=fake_weights_file,
+        model_factory=lambda: fake_model,
+    )
     result = classifier.classify([], Path("fake.wav"))
     assert result == []

@@ -14,9 +14,9 @@ TART(Technique-Aware Real-Time) 는 per-note 스펙트럴 특징 + pitch contour
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import numpy as np
 
@@ -24,10 +24,8 @@ from ..models import MidiEvent, TechniqueAnnotation
 
 try:
     import torch  # type: ignore[import]
-    _TORCH_AVAILABLE = True
 except ImportError:  # pragma: no cover
     torch = None  # type: ignore[assignment]
-    _TORCH_AVAILABLE = False
 
 if TYPE_CHECKING:
     import torch  # noqa: F811
@@ -64,7 +62,7 @@ def _load_audio(audio_path: Path) -> tuple[np.ndarray, int]:
         if audio.max() > 1.0 or audio.min() < -1.0:
             audio = audio / np.iinfo(data.dtype).max  # type: ignore[attr-defined]
         return audio, int(sr)
-    except Exception:
+    except (ValueError, FileNotFoundError, OSError):
         pass
 
     if sf_mod is not None:
@@ -176,9 +174,15 @@ class TARTTechniqueClassifier:
     Args:
         weights_path: 사전 학습 가중치 파일 경로.
                       None 이면 추론 없이 빈 리스트 반환.
+        model_factory: 모델 아키텍처를 생성하는 callable.
+                       weights_path 를 지정할 때 반드시 함께 제공해야 한다.
+                       예: ``model_factory=lambda: MyTARTModel()``
     """
 
     weights_path: Path | None = None
+    model_factory: Callable[[], "torch.nn.Module"] | None = field(
+        default=None, repr=False
+    )
 
     def classify(
         self,
@@ -202,7 +206,18 @@ class TARTTechniqueClassifier:
             return []
 
         # --- 모델 로드 --------------------------------------------------------
-        model = torch.load(self.weights_path, map_location="cpu")
+        # weights_only=True: state_dict 형식만 허용하여 역직렬화 코드 실행을 차단한다.
+        # 가중치 파일은 nn.Module 을 통째로 pickle 한 것이 아니라
+        # torch.save(model.state_dict(), path) 로 저장된 state_dict 여야 한다.
+        # 전체 모듈을 pickle 한 파일을 로드하면 weights_only=True 로 인해 오류가 발생한다.
+        state_dict = torch.load(self.weights_path, map_location="cpu", weights_only=True)
+        if self.model_factory is None:
+            raise RuntimeError(
+                "weights_path 가 지정된 경우 model_factory 도 반드시 제공해야 합니다. "
+                "model_factory=lambda: MyModel() 형식으로 지정하세요."
+            )
+        model = self.model_factory()
+        model.load_state_dict(state_dict)
         model.eval()
 
         # --- 오디오 로드 ------------------------------------------------------
@@ -222,7 +237,11 @@ class TARTTechniqueClassifier:
                 label_idx = int(probs.argmax().item())
                 confidence = float(probs[label_idx].item())
 
-                label = _LABELS[label_idx % len(_LABELS)]
+                if not 0 <= label_idx < len(_LABELS):
+                    raise ValueError(
+                        f"Model emitted out-of-range class index {label_idx}"
+                    )
+                label = _LABELS[label_idx]
                 annotations.append(
                     TechniqueAnnotation(
                         technique=label,  # type: ignore[arg-type]
