@@ -15,12 +15,16 @@ weights_path/model_factory가 None이면 빈 결과를 반환하는 폴백 구�
 
 `save_intermediates=True` 면 각 단계의 산출물을 workdir/intermediates/*.json 로
 dump 한다 — 최종 GP5 결과가 깨졌을 때 어느 단계에서 무엇이 잘못됐는지 추적용.
+
+참고: ``intermediates/{NN_name}.json`` 의 prefix 번호는 위 stage 번호와 다른
+'산출물(artifact) 번호' 이며, ``run()`` 내부 dump 호출 순서를 그대로 따른다.
 """
 from __future__ import annotations
 
 import dataclasses
 import json
 import time
+import warnings
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -109,7 +113,14 @@ class Pipeline:
         )
 
         if self.save_intermediates:
-            self._write_summary()
+            try:
+                self._write_summary()
+            except (TypeError, OSError, ValueError) as exc:
+                warnings.warn(
+                    f"Failed to write intermediate summary: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return self._write_output(notes, output_path)
 
@@ -174,35 +185,51 @@ class Pipeline:
         if not self.save_intermediates:
             return None
 
-        out_dir = self.workdir / "intermediates"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{name}.json"
+        try:
+            out_dir = self.workdir / "intermediates"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / f"{name}.json"
 
-        serializable = _to_serializable(data)
-        out_path.write_text(
-            json.dumps(serializable, default=_json_default, indent=2, ensure_ascii=False)
-        )
+            serializable = _to_serializable(data)
+            out_path.write_text(
+                json.dumps(serializable, default=_json_default, indent=2, ensure_ascii=False)
+            )
 
-        count = len(data) if hasattr(data, "__len__") else 1
-        sample_src = serializable[:3] if isinstance(serializable, list) else [serializable]
-        self._summary.append(
-            {
-                "stage": name,
-                "count": count,
-                "elapsed_sec": float(elapsed_sec),
-                "sample": sample_src,
-                "output_path": str(out_path),
-            }
-        )
-        return out_path
+            count = len(data) if hasattr(data, "__len__") else 1
+            sample_src = serializable[:3] if isinstance(serializable, list) else [serializable]
+            self._summary.append(
+                {
+                    "stage": name,
+                    "count": count,
+                    "elapsed_sec": float(elapsed_sec),
+                    "sample": sample_src,
+                    "output_path": str(out_path),
+                }
+            )
+            return out_path
+        except (TypeError, OSError, ValueError) as exc:
+            warnings.warn(
+                f"Failed to dump intermediate {name!r}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
 
     def _write_summary(self) -> Path | None:
         if not self.save_intermediates:
             return None
-        out_dir = self.workdir / "intermediates"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / "summary.json"
-        out_path.write_text(
-            json.dumps(self._summary, default=_json_default, indent=2, ensure_ascii=False)
-        )
-        return out_path
+        try:
+            out_dir = self.workdir / "intermediates"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            out_path = out_dir / "summary.json"
+            out_path.write_text(
+                json.dumps(self._summary, default=_json_default, indent=2, ensure_ascii=False)
+            )
+            return out_path
+        except (TypeError, OSError, ValueError) as exc:
+            warnings.warn(
+                f"Failed to write intermediate summary: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return None
