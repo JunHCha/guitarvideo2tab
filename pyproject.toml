@@ -47,3 +47,6 @@ select = ["E", "F", "I", "N", "W"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# importlib 모드: tests/ 가 namespace package(__init__.py 없음) 일 때
+# 같은 basename 테스트 파일이 여러 디렉토리에 있어도 충돌하지 않음.
+addopts = "--import-mode=importlib"
