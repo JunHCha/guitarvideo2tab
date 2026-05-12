@@ -5,8 +5,10 @@
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from guitarvideo2tab import pipeline as pipeline_mod
@@ -16,6 +18,7 @@ from guitarvideo2tab.models import (
     HandKeypoints,
     MidiEvent,
     NoteEvent,
+    TechniqueAnnotation,
 )
 from guitarvideo2tab.pipeline import Pipeline
 
@@ -202,3 +205,142 @@ def test_pipeline_records_intermediate_paths(workdir, tmp_path, monkeypatch):
     assert paths["audio_wav"] == workdir / "audio.wav"
     assert paths["video_only"] == workdir / "video-only.mp4"
     assert paths["guitar_wav"] == workdir / "guitar.wav"
+
+
+# ---------------------------------------------------------------------------
+# Intermediate dump (save_intermediates=True) tests
+# ---------------------------------------------------------------------------
+
+
+def test_save_intermediates_creates_directory(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=True)
+    sample = [MidiEvent(pitch=60, start_time=0.0, end_time=0.1, velocity=80)]
+    out = pipeline._dump_stage("01_midi_events", sample)
+    assert (tmp_path / "intermediates").is_dir()
+    assert out is not None and out.exists()
+
+
+def test_save_intermediates_false_creates_no_directory(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=False)
+    sample = [MidiEvent(pitch=60, start_time=0.0, end_time=0.1, velocity=80)]
+    out = pipeline._dump_stage("01_midi_events", sample)
+    assert out is None
+    assert not (tmp_path / "intermediates").exists()
+
+
+def test_dump_stage_writes_json(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=True)
+    events = [
+        MidiEvent(pitch=60, start_time=0.0, end_time=0.5, velocity=80),
+        MidiEvent(pitch=64, start_time=0.5, end_time=1.0, velocity=90),
+    ]
+    out = pipeline._dump_stage("01_midi_events", events)
+
+    assert out == tmp_path / "intermediates" / "01_midi_events.json"
+    loaded = json.loads(out.read_text())
+    assert isinstance(loaded, list)
+    assert len(loaded) == 2
+    assert loaded[0]["pitch"] == 60
+    assert loaded[1]["start_time"] == 0.5
+
+
+def test_dump_stage_handles_numpy(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=True)
+    payload = [
+        {
+            "vec": np.array([1.0, 2.0, 3.0]),
+            "score": np.float64(0.75),
+            "count": np.int64(42),
+        }
+    ]
+    out = pipeline._dump_stage("dummy", payload)
+
+    loaded = json.loads(out.read_text())
+    assert loaded[0]["vec"] == [1.0, 2.0, 3.0]
+    assert loaded[0]["score"] == pytest.approx(0.75)
+    assert loaded[0]["count"] == 42
+
+
+def test_dump_stage_appends_to_summary(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=True)
+    pipeline._dump_stage("01_midi_events", [
+        MidiEvent(pitch=60, start_time=0.0, end_time=0.1, velocity=80),
+    ], elapsed_sec=0.123)
+    pipeline._dump_stage("02_audio_techniques", [
+        TechniqueAnnotation(technique="bend", confidence=0.9, source="audio"),
+    ], elapsed_sec=0.456)
+
+    assert len(pipeline._summary) == 2
+    assert pipeline._summary[0]["stage"] == "01_midi_events"
+    assert pipeline._summary[0]["count"] == 1
+    assert pipeline._summary[0]["elapsed_sec"] == pytest.approx(0.123)
+    assert pipeline._summary[1]["stage"] == "02_audio_techniques"
+    assert pipeline._summary[1]["count"] == 1
+    assert pipeline._summary[1]["elapsed_sec"] == pytest.approx(0.456)
+
+
+def test_write_summary_creates_summary_json(tmp_path: Path):
+    pipeline = Pipeline(workdir=tmp_path, save_intermediates=True)
+    pipeline._dump_stage("01_midi_events", [
+        MidiEvent(pitch=60, start_time=0.0, end_time=0.1, velocity=80),
+    ], elapsed_sec=0.1)
+    pipeline._dump_stage("07_notes_fused", [], elapsed_sec=0.2)
+    summary_path = pipeline._write_summary()
+
+    assert summary_path == tmp_path / "intermediates" / "summary.json"
+    data = json.loads(summary_path.read_text())
+    assert isinstance(data, list)
+    stages = [item["stage"] for item in data]
+    assert "01_midi_events" in stages
+    assert "07_notes_fused" in stages
+
+
+def test_pipeline_run_with_save_intermediates_dumps_all_stages(
+    workdir, tmp_path, monkeypatch
+):
+    recorder: dict = {}
+    _stub_pipeline_dependencies(monkeypatch, recorder)
+
+    output = tmp_path / "out.gpx"
+    pipeline = Pipeline(workdir=workdir, save_intermediates=True)
+    pipeline.run("input.mp4", output)
+
+    inter = workdir / "intermediates"
+    assert inter.is_dir()
+
+    expected = {
+        "01_midi_events.json",
+        "02_audio_techniques.json",
+        "03_fretboards.json",
+        "04_hands.json",
+        "05_fret_positions.json",
+        "06_vision_techniques.json",
+        "07_notes_fused.json",
+        "summary.json",
+    }
+    actual = {p.name for p in inter.iterdir()}
+    assert expected.issubset(actual), f"missing: {expected - actual}"
+
+    summary = json.loads((inter / "summary.json").read_text())
+    summary_stages = {item["stage"] for item in summary}
+    assert {
+        "01_midi_events",
+        "02_audio_techniques",
+        "03_fretboards",
+        "04_hands",
+        "05_fret_positions",
+        "06_vision_techniques",
+        "07_notes_fused",
+    }.issubset(summary_stages)
+
+
+def test_pipeline_run_without_save_intermediates_creates_no_dir(
+    workdir, tmp_path, monkeypatch
+):
+    recorder: dict = {}
+    _stub_pipeline_dependencies(monkeypatch, recorder)
+
+    Pipeline(workdir=workdir, save_intermediates=False).run(
+        "input.mp4", tmp_path / "out.gpx"
+    )
+    assert not (workdir / "intermediates").exists()
