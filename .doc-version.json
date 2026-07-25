@@ -1,26 +1,26 @@
 {
-  "last_synced_commit": "6695437a0e09cababa06350cdde16562e00885e6",
-  "synced_at": "2026-05-11T12:39:52Z",
+  "last_synced_commit": "e650ede7b5ea9937242a9515b31e8b23d74dc113",
+  "synced_at": "2026-07-25T15:21:01Z",
   "documents": {
     "architecture.md": {
-      "description": "전체 멀티모달 파이프라인 구조, 모듈별 역할, 데이터 흐름",
-      "last_updated": "2026-05-08"
+      "description": "멀티모달 파이프라인 구조, 리듬 해석·출력·워크스페이스 계층, 데이터 흐름",
+      "last_updated": "2026-07-26"
     },
     "source-index.md": {
-      "description": "12개 핵심 모듈 모두 구현 완료 상태 + 104 tests 인덱스",
-      "last_updated": "2026-05-11"
+      "description": "14개 핵심 모듈 인덱스 + 165 tests + 알려진 결함 4건",
+      "last_updated": "2026-07-26"
     },
     "coding-style.md": {
-      "description": "기술 스택, 라이브러리, 코딩 규칙, 프로젝트 구조",
-      "last_updated": "2026-05-08"
+      "description": "기술 스택(mido/MusicXML), 코딩 규칙, PEP 420, 라운드트립 테스트 원칙",
+      "last_updated": "2026-07-26"
     },
     "features.md": {
-      "description": "F1~F9 핵심 기능, 지원 표현 기법 목록, 비기능 요구사항",
-      "last_updated": "2026-05-08"
+      "description": "F1~F11 핵심 기능, 표현 기법 목록, 비기능 요구사항",
+      "last_updated": "2026-07-26"
     },
     "build-test.md": {
-      "description": "환경 설정, uv 패키지 관리, 실행/테스트 명령, 데이터셋 준비",
-      "last_updated": "2026-05-08"
+      "description": "환경 설정, run/list CLI, runs/ 워크스페이스, 실측 소요 시간",
+      "last_updated": "2026-07-26"
     }
   },
   "decisions": {
