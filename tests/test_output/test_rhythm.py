@@ -165,6 +165,46 @@ def test_same_string_collision_keeps_only_loudest() -> None:
     assert [n.fret for n in chord.notes] == [5, 3], "velocity 가 큰 쪽(fret 3)이 남는다"
 
 
+def test_unresolved_notes_are_deduped_by_pitch_not_string() -> None:
+    """비전이 위치를 못 잡은 음(string=-1)을 sentinel 로 묶으면 음이 사라진다.
+
+    미해결 음은 pitch 가 서로 다르면 모두 살아남아야 한다 — 실제로 연주된
+    음이고 MIDI/MusicXML 은 pitch 만으로도 기록할 수 있기 때문이다.
+    """
+    notes = [
+        _note(0.0, 0.5, pitch=55, string=-1, fret=-1),
+        _note(0.0, 0.5, pitch=59, string=-1, fret=-1),
+        _note(0.0, 0.5, pitch=62, string=-1, fret=-1),
+    ]
+    chord = [b for b in quantize_notes(notes, _grid()) if not b.is_rest][0]
+
+    assert [n.midi_event.pitch for n in chord.notes] == [55, 59, 62]
+
+
+def test_identical_unresolved_pitches_collapse() -> None:
+    quiet = _note(0.0, 0.5, pitch=55, string=-1, fret=-1)
+    quiet.midi_event.velocity = 30
+    loud = _note(0.0, 0.5, pitch=55, string=-1, fret=-1)
+    loud.midi_event.velocity = 100
+
+    chord = [b for b in quantize_notes([quiet, loud], _grid()) if not b.is_rest][0]
+
+    assert len(chord.notes) == 1
+    assert chord.notes[0].midi_event.velocity == 100
+
+
+def test_resolved_and_unresolved_notes_coexist_in_one_beat() -> None:
+    notes = [
+        _note(0.0, 0.5, pitch=43, string=1, fret=3),
+        _note(0.0, 0.5, pitch=59, string=-1, fret=-1),
+    ]
+    chord = [b for b in quantize_notes(notes, _grid()) if not b.is_rest][0]
+
+    assert len(chord.notes) == 2
+    assert chord.notes[0].string == 1  # 현이 배정된 음이 앞에 온다
+    assert chord.notes[1].string == -1
+
+
 def test_chord_never_repeats_a_string() -> None:
     """현 중복 제거가 모든 beat 에 적용되는지 확인."""
     notes = [

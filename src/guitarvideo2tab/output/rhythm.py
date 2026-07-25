@@ -1,6 +1,6 @@
 """리듬 해석: tempo 추정 → 양자화 → 마디 분할.
 
-Basic Pitch 가 만든 ``MidiEvent`` 의 절대 시각(초)을 Guitar Pro 의 틱 격자로
+Basic Pitch 가 만든 ``MidiEvent`` 의 절대 시각(초)을 악보 틱 격자로
 옮기는 단계. 이 모듈이 없으면 모든 음이 한 마디에 4분음표로 쌓여서 악보를
 읽을 수 없다.
 
@@ -13,7 +13,7 @@ Basic Pitch 가 만든 ``MidiEvent`` 의 절대 시각(초)을 Guitar Pro 의 �
     5. 마디 분할          — measure_ticks 로 나눠 마디 인덱스/오프셋 계산
     6. 쉼표 채우기        — 마디 내 빈 구간과 빈 마디를 쉼표로 메움
 
-Guitar Pro 틱 규약: 4분음표 = 960 틱 (``guitarpro.Duration.quarterTime``).
+틱 규약: 4분음표 = 960 틱 (MIDI ticks_per_beat / MusicXML divisions 와 공유).
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from pathlib import Path
 
 from ..models import NoteEvent
 
-# guitarpro.Duration.quarterTime 과 동일해야 한다.
+# MIDI ticks_per_beat 및 MusicXML divisions 값과 동일하게 유지한다.
 QUARTER_TICKS = 960
 WHOLE_TICKS = QUARTER_TICKS * 4
 
@@ -33,7 +33,8 @@ DEFAULT_SUBDIVISION = 16  # 16분음표 격자
 _BPM_MIN = 60.0
 _BPM_MAX = 180.0
 
-# Guitar Pro 가 단일 Duration 으로 표현 가능한 (value, isDotted) → 틱 매핑.
+# 단일 음표로 표현 가능한 (value, isDotted) → 틱 매핑.
+# value 는 음표 분모(1=온음표, 4=4분음표 …)이며 MusicXML <type> 과 대응한다.
 # 내림차순 정렬해두고 greedy 로 가장 큰 표현 가능 길이를 고른다.
 _DURATION_TABLE: list[tuple[int, bool, int]] = sorted(
     (
@@ -110,7 +111,7 @@ class QuantizedBeat:
 
 
 def ticks_to_duration(ticks: int) -> tuple[int, bool]:
-    """틱 길이를 Guitar Pro Duration ``(value, isDotted)`` 로 내림 변환한다.
+    """틱 길이를 음표 길이 ``(value, isDotted)`` 로 내림 변환한다.
 
     표현 불가능한 길이는 **표현 가능한 가장 큰 길이로 내림**한다. 남는 시간은
     호출자가 쉼표로 메운다. 이렇게 하면 잇단음표/타이 없이도 마디 총합이 맞는다.
@@ -231,28 +232,41 @@ def build_grid(
 # ---------------------------------------------------------------------------
 
 
-def _dedupe_by_string(chord: list[NoteEvent]) -> list[NoteEvent]:
-    """한 현에서는 동시에 한 음만 울릴 수 있으므로 현당 하나만 남긴다.
+def _louder(candidate: NoteEvent, current: NoteEvent | None) -> bool:
+    return current is None or candidate.midi_event.velocity > current.midi_event.velocity
 
-    같은 격자 칸에 같은 현의 음이 여러 개 몰리면 velocity 가 큰 쪽을 택한다.
-    Guitar Pro 는 beat 마다 현 비트마스크를 쓰고 **세팅된 비트 수만큼만** 노트를
-    기록하므로, 현이 중복되면 마스크와 노트 수가 어긋나 파일이 깨진다.
+
+def _dedupe_simultaneous(chord: list[NoteEvent]) -> list[NoteEvent]:
+    """같은 격자 칸에 겹친 음들을 연주 가능한 형태로 추린다.
+
+    * **현이 배정된 음**(``string >= 1``)은 현당 하나만 남긴다. 한 현에서 두 음을
+      동시에 낼 수 없다는 물리적 제약이며, TAB 에서도 같은 현에 두 숫자를 겹쳐
+      적을 수 없다. 겹치면 velocity 가 큰 쪽을 택한다.
+    * **현이 미해결인 음**(``string == -1``, 비전이 위치를 못 잡은 경우)은 현이
+      아니라 **pitch 기준**으로 추린다. 미해결 음을 sentinel ``-1`` 로 묶으면
+      서로 다른 음높이가 하나로 뭉개져 실제 연주된 음이 사라진다.
     """
-    best: dict[int, NoteEvent] = {}
+    by_string: dict[int, NoteEvent] = {}
+    by_pitch: dict[int, NoteEvent] = {}
     for note in chord:
-        current = best.get(note.string)
-        if current is None or note.midi_event.velocity > current.midi_event.velocity:
-            best[note.string] = note
-    return [best[string] for string in sorted(best)]
+        if note.string >= 1:
+            if _louder(note, by_string.get(note.string)):
+                by_string[note.string] = note
+        elif _louder(note, by_pitch.get(note.midi_event.pitch)):
+            by_pitch[note.midi_event.pitch] = note
+
+    resolved = [by_string[string] for string in sorted(by_string)]
+    unresolved = [by_pitch[pitch] for pitch in sorted(by_pitch)]
+    return resolved + unresolved
 
 
 def _group_by_onset(notes: list[NoteEvent], grid: RhythmGrid) -> list[tuple[int, list[NoteEvent]]]:
-    """같은 격자 칸에 떨어진 음들을 화음으로 묶는다(현 중복 제거)."""
+    """같은 격자 칸에 떨어진 음들을 화음으로 묶는다(연주 불가 조합 제거)."""
     groups: dict[int, list[NoteEvent]] = {}
     for note in notes:
         tick = grid.to_ticks(note.midi_event.start_time)
         groups.setdefault(tick, []).append(note)
-    return [(tick, _dedupe_by_string(chord)) for tick, chord in sorted(groups.items())]
+    return [(tick, _dedupe_simultaneous(chord)) for tick, chord in sorted(groups.items())]
 
 
 def quantize_notes(notes: list[NoteEvent], grid: RhythmGrid) -> list[QuantizedBeat]:

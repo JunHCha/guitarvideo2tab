@@ -41,11 +41,20 @@ Thumbs.db
 data/
 models/
 *.pt
-output*.gpx
-output*.gp5
+
+# 실행별 산출물 워크스페이스 (README/.gitkeep 만 추적)
+runs/*
+!runs/.gitkeep
+!runs/README.md
+
+# 미디어 / 악보 산출물
 *.wav
 *.mp4
 *.mid
+*.midi
+*.musicxml
+*.gpx
+*.gp5
 
 # OMC
 .omc/
