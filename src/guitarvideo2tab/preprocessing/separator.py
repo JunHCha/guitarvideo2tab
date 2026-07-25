@@ -25,11 +25,13 @@ def split_audio_video(video_path: Path, output_dir: Path) -> tuple[Path, Path]:
     src = ffmpeg.input(str(video_path))
 
     # 오디오 추출 → WAV, PTS 보존
-    ffmpeg.output(src, str(audio_path), copyts=None).run(overwrite_output=True)
+    ffmpeg.output(src, str(audio_path), copyts=None).run(
+        overwrite_output=True, quiet=True
+    )
 
     # 비디오 전용 트랙 추출 → MP4, 오디오 제거, PTS 보존
     ffmpeg.output(src, str(video_path_out), an=None, copyts=None).run(
-        overwrite_output=True
+        overwrite_output=True, quiet=True
     )
 
     return audio_path, video_path_out

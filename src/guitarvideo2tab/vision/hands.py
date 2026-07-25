@@ -10,6 +10,23 @@ import mediapipe as mp
 
 from ..models import HandKeypoints
 
+_HAND_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+
+
+def _default_hand_landmarker_model() -> Path:
+    """Return path to a cached ``hand_landmarker.task``, downloading once if absent."""
+    import urllib.request
+
+    cache_dir = Path.home() / ".cache" / "guitarvideo2tab" / "models"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    dest = cache_dir / "hand_landmarker.task"
+    if not dest.exists():
+        urllib.request.urlretrieve(_HAND_LANDMARKER_URL, dest)
+    return dest
+
 
 def _make_hands_solution(
     min_detection_confidence: float,
@@ -35,7 +52,10 @@ def _make_hands_solution(
     except (AttributeError, ImportError, ModuleNotFoundError):
         pass
 
-    # Modern Tasks API (mediapipe >= 0.10)
+    # Modern Tasks API (mediapipe >= 0.10) — auto-download .task model when missing.
+    if model_asset_path is None:
+        model_asset_path = _default_hand_landmarker_model()
+
     return _TasksHandsAdapter(
         min_detection_confidence=min_detection_confidence,
         min_tracking_confidence=min_tracking_confidence,
