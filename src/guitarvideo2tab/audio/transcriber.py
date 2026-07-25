@@ -1,6 +1,8 @@
 """Basic Pitch (Spotify) AMT — 오디오 → MIDI + pitch-bend curve."""
 from __future__ import annotations
 
+import contextlib
+import io
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -18,14 +20,17 @@ class BasicPitchTranscriber:
     frame_threshold: float = 0.3
 
     def transcribe(self, audio_path: Path) -> list[MidiEvent]:
-        _, _, note_events = predict(
-            str(audio_path),
-            model_or_model_path=ICASSP_2022_MODEL_PATH,
-            onset_threshold=self.onset_threshold,
-            frame_threshold=self.frame_threshold,
-            multiple_pitch_bends=True,
-            melodia_trick=True,
-        )
+        # basic-pitch's predict() emits leftover debug prints ("isfinite: …",
+        # "shape: …") to stdout; silence them — errors still propagate via raise.
+        with contextlib.redirect_stdout(io.StringIO()):
+            _, _, note_events = predict(
+                str(audio_path),
+                model_or_model_path=ICASSP_2022_MODEL_PATH,
+                onset_threshold=self.onset_threshold,
+                frame_threshold=self.frame_threshold,
+                multiple_pitch_bends=True,
+                melodia_trick=True,
+            )
         frame_rate = AUDIO_SAMPLE_RATE / FFT_HOP
         return [self._to_midi_event(idx, evt, frame_rate) for idx, evt in enumerate(note_events)]
 
