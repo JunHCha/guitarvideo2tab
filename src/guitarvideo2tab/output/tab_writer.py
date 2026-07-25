@@ -8,6 +8,7 @@ from pathlib import Path
 import guitarpro
 
 from ..models import NoteEvent
+from .rhythm import QuantizedBeat, RhythmGrid, build_grid, quantize_notes, ticks_to_duration
 
 logger = logging.getLogger(__name__)
 
@@ -16,72 +17,115 @@ _BEND_MAX_POSITION = 12
 _BEND_SEMITONE_VALUE = 100  # 100 units = 1 semitone in GP bend scale
 
 
-def _build_song(notes: list[NoteEvent], tuning: tuple[int, ...]) -> guitarpro.Song:
-    """Build a minimal valid guitarpro.Song from NoteEvent list."""
-    # --- Strings ---
+def _build_measure_headers(count: int, grid: RhythmGrid) -> list[guitarpro.MeasureHeader]:
+    """``count`` 개의 마디 헤더를 만들고 start 틱을 누적시킨다.
+
+    Guitar Pro 의 첫 마디는 틱 0 이 아니라 ``Duration.quarterTime`` 에서 시작한다.
+    """
+    headers: list[guitarpro.MeasureHeader] = []
+    start = guitarpro.Duration.quarterTime
+    for index in range(count):
+        header = guitarpro.MeasureHeader(
+            number=index + 1,
+            start=start,
+            timeSignature=guitarpro.TimeSignature(
+                numerator=grid.numerator,
+                denominator=guitarpro.Duration(value=grid.denominator),
+            ),
+        )
+        headers.append(header)
+        start += header.length
+    return headers
+
+
+def _build_song(
+    notes: list[NoteEvent],
+    tuning: tuple[int, ...],
+    grid: RhythmGrid,
+) -> guitarpro.Song:
+    """양자화된 리듬을 반영한 guitarpro.Song 을 만든다."""
     strings = [
         guitarpro.GuitarString(number=i + 1, value=midi)
         for i, midi in enumerate(tuning)
     ]
 
-    # --- Measure header (one measure, tempo 120) ---
-    header = guitarpro.MeasureHeader(number=1)
-
-    # --- Song skeleton ---
-    song = guitarpro.Song(
-        tempo=120,
-        measureHeaders=[header],
-    )
-
-    # --- Track ---
-    track = guitarpro.Track(
-        song=song,
-        number=1,
-        strings=strings,
-        name="Guitar",
-    )
-    song.tracks = [track]
-
-    # --- Measure / Voice ---
-    measure = guitarpro.Measure(track=track, header=header)
-    track.measures = [measure]
-
-    voice = measure.voices[0]
-
-    # --- Populate beats/notes ---
-    valid_notes = [
-        n for n in notes if n.string >= 1 and n.fret >= 0
-    ]
+    valid_notes = [n for n in notes if n.string >= 1 and n.fret >= 0]
     skipped = len(notes) - len(valid_notes)
     if skipped:
         logger.debug("Skipping %d NoteEvent(s) with string=-1 or fret=-1", skipped)
 
-    if not valid_notes:
-        # At least one rest beat so the measure is structurally valid
-        rest_beat = guitarpro.Beat(voice, status=guitarpro.BeatStatus.empty)
-        voice.beats = [rest_beat]
-    else:
-        beats = []
-        for note_event in valid_notes:
-            beat = guitarpro.Beat(voice)
-            beat.status = guitarpro.BeatStatus.normal
-            beat.duration = guitarpro.Duration(value=4)  # quarter note
+    quantized = quantize_notes(valid_notes, grid)
+    measure_count = max((b.measure_index for b in quantized), default=-1) + 1
+    measure_count = max(measure_count, 1)  # 음이 없어도 빈 마디 하나는 필요
 
-            note = guitarpro.Note(
-                beat=beat,
-                value=note_event.fret,
-                string=note_event.string,
-                type=guitarpro.NoteType.normal,
-            )
+    headers = _build_measure_headers(measure_count, grid)
 
-            _apply_technique(note, beat, note_event)
+    song = guitarpro.Song(tempo=int(round(grid.tempo_bpm)), measureHeaders=headers)
+    track = guitarpro.Track(song=song, number=1, strings=strings, name="Guitar")
+    song.tracks = [track]
 
-            beat.notes = [note]
-            beats.append(beat)
+    by_measure: dict[int, list[QuantizedBeat]] = {}
+    for beat in quantized:
+        by_measure.setdefault(beat.measure_index, []).append(beat)
 
-        voice.beats = beats
+    measures: list[guitarpro.Measure] = []
+    for index, header in enumerate(headers):
+        measure = guitarpro.Measure(track=track, header=header)
+        voice = measure.voices[0]
+        voice.beats = [
+            _build_beat(voice, qbeat, header.start)
+            for qbeat in sorted(by_measure.get(index, []), key=lambda b: b.offset_ticks)
+        ] or [_full_measure_rest(voice, grid, header.start)]
+        measures.append(measure)
+    track.measures = measures
 
     return song
+
+
+def _build_beat(
+    voice: guitarpro.Voice,
+    qbeat: QuantizedBeat,
+    measure_start: int,
+) -> guitarpro.Beat:
+    """QuantizedBeat 하나를 guitarpro.Beat 으로 변환한다(화음은 한 Beat 안의 여러 Note)."""
+    value, is_dotted = ticks_to_duration(qbeat.duration_ticks)
+    beat = guitarpro.Beat(voice)
+    beat.duration = guitarpro.Duration(value=value, isDotted=is_dotted)
+    beat.start = measure_start + qbeat.offset_ticks
+
+    if qbeat.is_rest:
+        beat.status = guitarpro.BeatStatus.rest
+        beat.notes = []
+        return beat
+
+    beat.status = guitarpro.BeatStatus.normal
+    gp_notes = []
+    for note_event in qbeat.notes:
+        note = guitarpro.Note(
+            beat=beat,
+            value=note_event.fret,
+            string=note_event.string,
+            type=guitarpro.NoteType.normal,
+        )
+        _apply_technique(note, beat, note_event)
+        gp_notes.append(note)
+    beat.notes = gp_notes
+    return beat
+
+
+def _full_measure_rest(
+    voice: guitarpro.Voice,
+    grid: RhythmGrid,
+    measure_start: int,
+) -> guitarpro.Beat:
+    """온쉼표 한 개로 채워진 빈 마디를 만든다."""
+    value, is_dotted = ticks_to_duration(grid.measure_ticks)
+    beat = guitarpro.Beat(voice)
+    beat.duration = guitarpro.Duration(value=value, isDotted=is_dotted)
+    beat.start = measure_start
+    beat.status = guitarpro.BeatStatus.rest
+    beat.notes = []
+    return beat
 
 
 def _apply_technique(
@@ -146,21 +190,52 @@ def write_song(
     notes: list[NoteEvent],
     output_path: Path,
     tuning: tuple[int, ...],
+    grid: RhythmGrid,
 ) -> Path:
     """Build song and write to output_path via guitarpro.write."""
-    song = _build_song(notes, tuning)
+    song = _build_song(notes, tuning, grid)
     guitarpro.write(song, str(output_path))
     return output_path
 
 
 @dataclass
 class TabWriter:
+    """NoteEvent 목록을 Guitar Pro 파일로 직렬화한다.
+
+    ``audio_path`` 를 주면 librosa 로 tempo/다운비트를 추정한다. 주지 않으면
+    노트 onset 간격(IOI)으로 추정하며, ``tempo_bpm`` 을 직접 주면 추정을 건너뛴다.
+    """
+
     tuning: tuple[int, ...] = (40, 45, 50, 55, 59, 64)  # 표준 EADGBE (MIDI)
+    tempo_bpm: float | None = None
+    numerator: int = 4
+    denominator: int = 4
+    subdivision: int = 16
 
-    def write_gpx(self, notes: list[NoteEvent], output_path: Path) -> Path:
+    def _grid(self, notes: list[NoteEvent], audio_path: Path | None) -> RhythmGrid:
+        return build_grid(
+            [n.midi_event for n in notes],
+            audio_path=audio_path,
+            tempo_bpm=self.tempo_bpm,
+            numerator=self.numerator,
+            denominator=self.denominator,
+            subdivision=self.subdivision,
+        )
+
+    def write_gpx(
+        self,
+        notes: list[NoteEvent],
+        output_path: Path,
+        audio_path: Path | None = None,
+    ) -> Path:
         """Write notes to a Guitar Pro file (.gpx format)."""
-        return write_song(notes, output_path, self.tuning)
+        return write_song(notes, output_path, self.tuning, self._grid(notes, audio_path))
 
-    def write_gp5(self, notes: list[NoteEvent], output_path: Path) -> Path:
+    def write_gp5(
+        self,
+        notes: list[NoteEvent],
+        output_path: Path,
+        audio_path: Path | None = None,
+    ) -> Path:
         """Write notes to a Guitar Pro file (.gp5 format)."""
-        return write_song(notes, output_path, self.tuning)
+        return write_song(notes, output_path, self.tuning, self._grid(notes, audio_path))

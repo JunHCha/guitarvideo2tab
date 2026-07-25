@@ -18,26 +18,32 @@ from guitarvideo2tab.output.tab_writer import TabWriter
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _midi(pitch: int = 60) -> MidiEvent:
-    return MidiEvent(pitch=pitch, start_time=0.0, end_time=0.5, velocity=80)
-
-
 def _note(
     string: int,
     fret: int,
     technique: TechniqueAnnotation | None = None,
     pitch_contour: PitchContour | None = None,
+    start: float = 0.0,
+    end: float = 0.5,
 ) -> NoteEvent:
-    midi = _midi()
-    if pitch_contour is not None:
-        midi = MidiEvent(
-            pitch=60,
-            start_time=0.0,
-            end_time=0.5,
-            velocity=80,
-            pitch_contour=pitch_contour,
-        )
+    midi = MidiEvent(
+        pitch=60,
+        start_time=start,
+        end_time=end,
+        velocity=80,
+        pitch_contour=pitch_contour,
+    )
     return NoteEvent(midi_event=midi, string=string, fret=fret, technique=technique)
+
+
+def _sounding_beats(song: guitarpro.Song) -> list[guitarpro.Beat]:
+    """쉼표를 제외한 실제 발음 beat 만 모든 마디에서 모은다."""
+    return [
+        beat
+        for measure in song.tracks[0].measures
+        for beat in measure.voices[0].beats
+        if beat.notes
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -67,16 +73,16 @@ def test_empty_notes_writes_song_with_standard_track(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: 3 notes (different strings/frets) → 3 Notes in the Song's track
+# Test 2: 동시 발음 3음 → 하나의 화음 Beat (3개의 연속 Beat 가 아님)
 # ---------------------------------------------------------------------------
 
-def test_three_notes_create_three_beats(tmp_path: Path) -> None:
+def test_simultaneous_notes_become_single_chord_beat(tmp_path: Path) -> None:
     notes = [
         _note(string=1, fret=0),
         _note(string=2, fret=5),
         _note(string=3, fret=7),
     ]
-    writer = TabWriter()
+    writer = TabWriter(tempo_bpm=120.0)
     output = tmp_path / "out.gpx"
 
     with patch("guitarvideo2tab.output.tab_writer.guitarpro.write") as mock_write:
@@ -85,17 +91,76 @@ def test_three_notes_create_three_beats(tmp_path: Path) -> None:
     assert result == output
     song_arg, _ = mock_write.call_args.args
 
-    voice = song_arg.tracks[0].measures[0].voices[0]
-    all_notes = [n for beat in voice.beats for n in beat.notes]
-    assert len(all_notes) == 3
+    sounding = _sounding_beats(song_arg)
+    assert len(sounding) == 1, "동시 발음은 하나의 화음 Beat 여야 한다"
+    assert [n.value for n in sounding[0].notes] == [0, 5, 7]
+    assert [n.string for n in sounding[0].notes] == [1, 2, 3]
 
-    # Verify fret values preserved
-    fret_values = [n.value for n in all_notes]
-    assert fret_values == [0, 5, 7]
 
-    # Verify string values preserved
-    string_values = [n.string for n in all_notes]
-    assert string_values == [1, 2, 3]
+# ---------------------------------------------------------------------------
+# Test 2b: 시간차를 둔 음들은 각각의 Beat 이며 마디를 넘어 배치된다
+# ---------------------------------------------------------------------------
+
+def test_sequential_notes_span_multiple_measures(tmp_path: Path) -> None:
+    # 120BPM 4/4 → 한 마디 2초. 0.0/0.5초는 1마디, 2.0초는 2마디.
+    notes = [
+        _note(string=1, fret=1, start=0.0, end=0.5),
+        _note(string=2, fret=2, start=0.5, end=1.0),
+        _note(string=3, fret=3, start=2.0, end=2.5),
+    ]
+    writer = TabWriter(tempo_bpm=120.0)
+    output = tmp_path / "out.gp5"
+
+    with patch("guitarvideo2tab.output.tab_writer.guitarpro.write") as mock_write:
+        writer.write_gp5(notes, output)
+
+    song_arg, _ = mock_write.call_args.args
+
+    assert len(song_arg.tracks[0].measures) == 2
+    assert len(song_arg.measureHeaders) == 2
+
+    sounding = _sounding_beats(song_arg)
+    assert len(sounding) == 3
+    assert [n.value for beat in sounding for n in beat.notes] == [1, 2, 3]
+
+
+# ---------------------------------------------------------------------------
+# Test 2c: 각 마디의 beat 길이 합이 정확히 한 마디여야 한다
+# ---------------------------------------------------------------------------
+
+def test_each_measure_is_rhythmically_complete(tmp_path: Path) -> None:
+    notes = [
+        _note(string=1, fret=1, start=0.0, end=0.3),
+        _note(string=2, fret=2, start=1.25, end=1.5),
+        _note(string=3, fret=3, start=3.0, end=3.5),
+    ]
+    writer = TabWriter(tempo_bpm=120.0)
+    output = tmp_path / "out.gp5"
+
+    with patch("guitarvideo2tab.output.tab_writer.guitarpro.write") as mock_write:
+        writer.write_gp5(notes, output)
+
+    song_arg, _ = mock_write.call_args.args
+
+    for measure in song_arg.tracks[0].measures:
+        total = sum(beat.duration.time for beat in measure.voices[0].beats)
+        assert total == measure.header.length, (
+            f"마디 {measure.header.number} 길이 불일치: {total} != {measure.header.length}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Test 2d: tempo 가 Song 에 반영된다
+# ---------------------------------------------------------------------------
+
+def test_tempo_is_written_to_song(tmp_path: Path) -> None:
+    writer = TabWriter(tempo_bpm=96.0)
+
+    with patch("guitarvideo2tab.output.tab_writer.guitarpro.write") as mock_write:
+        writer.write_gp5([_note(string=1, fret=0)], tmp_path / "out.gp5")
+
+    song_arg, _ = mock_write.call_args.args
+    assert song_arg.tempo == 96
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +213,57 @@ def test_unresolved_string_minus1_is_skipped(tmp_path: Path) -> None:
     assert len(all_notes) == 1
     assert all_notes[0].value == 3
     assert all_notes[0].string == 1
+
+
+# ---------------------------------------------------------------------------
+# Test 4b: 실제 파일 라운드트립 — write 를 모킹하지 않고 GP5 를 쓰고 다시 읽는다
+#
+# 다른 테스트들은 guitarpro.write 를 모킹하므로 직렬화 자체는 검증하지 못한다.
+# 현 중복처럼 포맷을 깨뜨리는 버그는 이 테스트로만 잡힌다.
+# ---------------------------------------------------------------------------
+
+def test_written_gp5_can_be_parsed_back(tmp_path: Path) -> None:
+    notes = [
+        # 같은 격자 칸 + 같은 현(1번) 충돌 → 하나만 남아야 파일이 유효하다
+        _note(string=1, fret=3, start=0.0, end=0.4),
+        _note(string=1, fret=8, start=0.0, end=0.4),
+        _note(string=2, fret=5, start=0.0, end=0.4),
+        _note(string=3, fret=7, start=0.0, end=0.4),
+        _note(string=4, fret=2, start=0.5, end=0.9),
+        _note(string=5, fret=0, start=1.0, end=1.4),
+        _note(string=6, fret=12, start=2.5, end=3.0),
+    ]
+    output = tmp_path / "roundtrip.gp5"
+
+    TabWriter(tempo_bpm=120.0).write_gp5(notes, output)
+
+    assert output.exists() and output.stat().st_size > 0
+
+    song = guitarpro.parse(str(output))  # 깨진 파일이면 여기서 GPException
+    assert song.tempo == 120
+    assert len(song.tracks) == 1
+
+    for measure in song.tracks[0].measures:
+        for beat in measure.voices[0].beats:
+            strings = [n.string for n in beat.notes]
+            assert len(strings) == len(set(strings)), f"현 중복: {strings}"
+
+
+def test_written_gp5_roundtrip_with_many_collisions(tmp_path: Path) -> None:
+    """현 충돌이 대량으로 발생하는 실제 파이프라인 형태의 입력."""
+    notes = [
+        _note(string=(i % 6) + 1, fret=i % 13, start=(i % 8) * 0.25, end=(i % 8) * 0.25 + 0.3)
+        for i in range(60)
+    ]
+    output = tmp_path / "collisions.gp5"
+
+    TabWriter(tempo_bpm=100.0).write_gp5(notes, output)
+    song = guitarpro.parse(str(output))
+
+    total_notes = sum(
+        len(b.notes) for m in song.tracks[0].measures for b in m.voices[0].beats
+    )
+    assert total_notes > 0
 
 
 # ---------------------------------------------------------------------------
