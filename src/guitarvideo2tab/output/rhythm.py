@@ -231,13 +231,28 @@ def build_grid(
 # ---------------------------------------------------------------------------
 
 
+def _dedupe_by_string(chord: list[NoteEvent]) -> list[NoteEvent]:
+    """한 현에서는 동시에 한 음만 울릴 수 있으므로 현당 하나만 남긴다.
+
+    같은 격자 칸에 같은 현의 음이 여러 개 몰리면 velocity 가 큰 쪽을 택한다.
+    Guitar Pro 는 beat 마다 현 비트마스크를 쓰고 **세팅된 비트 수만큼만** 노트를
+    기록하므로, 현이 중복되면 마스크와 노트 수가 어긋나 파일이 깨진다.
+    """
+    best: dict[int, NoteEvent] = {}
+    for note in chord:
+        current = best.get(note.string)
+        if current is None or note.midi_event.velocity > current.midi_event.velocity:
+            best[note.string] = note
+    return [best[string] for string in sorted(best)]
+
+
 def _group_by_onset(notes: list[NoteEvent], grid: RhythmGrid) -> list[tuple[int, list[NoteEvent]]]:
-    """같은 격자 칸에 떨어진 음들을 화음으로 묶는다."""
+    """같은 격자 칸에 떨어진 음들을 화음으로 묶는다(현 중복 제거)."""
     groups: dict[int, list[NoteEvent]] = {}
     for note in notes:
         tick = grid.to_ticks(note.midi_event.start_time)
         groups.setdefault(tick, []).append(note)
-    return sorted(groups.items())
+    return [(tick, _dedupe_by_string(chord)) for tick, chord in sorted(groups.items())]
 
 
 def quantize_notes(notes: list[NoteEvent], grid: RhythmGrid) -> list[QuantizedBeat]:

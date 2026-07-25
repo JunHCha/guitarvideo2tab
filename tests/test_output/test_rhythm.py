@@ -145,6 +145,40 @@ def test_simultaneous_notes_become_one_chord_beat() -> None:
     assert [n.string for n in sounding[0].notes] == [1, 2, 3]
 
 
+def test_same_string_collision_keeps_only_loudest() -> None:
+    """한 현에서는 동시에 한 음만 울릴 수 없다 — 현 중복은 제거되어야 한다.
+
+    GP5 는 beat 마다 현 비트마스크를 쓰고 세팅된 비트 수만큼만 노트를 기록하므로,
+    현이 중복되면 마스크와 노트 수가 어긋나 파일 자체가 깨진다.
+    """
+    quiet = _note(0.0, 0.5, string=6, fret=16)
+    quiet.midi_event.velocity = 40
+    loud = _note(0.0, 0.5, string=6, fret=3)
+    loud.midi_event.velocity = 110
+    other = _note(0.0, 0.5, string=2, fret=5)
+
+    beats = quantize_notes([quiet, loud, other], _grid())
+    chord = [b for b in beats if not b.is_rest][0]
+
+    assert len(chord.notes) == 2, "6번 현 중복이 제거되어야 한다"
+    assert [n.string for n in chord.notes] == [2, 6]
+    assert [n.fret for n in chord.notes] == [5, 3], "velocity 가 큰 쪽(fret 3)이 남는다"
+
+
+def test_chord_never_repeats_a_string() -> None:
+    """현 중복 제거가 모든 beat 에 적용되는지 확인."""
+    notes = [
+        _note(t, t + 0.4, string=s, fret=f)
+        for t in (0.0, 0.25, 0.5)
+        for s, f in ((1, 3), (1, 5), (3, 7), (3, 9), (6, 0))
+    ]
+    beats = quantize_notes(notes, _grid())
+
+    for beat in beats:
+        strings = [n.string for n in beat.notes]
+        assert len(strings) == len(set(strings)), f"현 중복 발견: {strings}"
+
+
 def test_sequential_notes_become_separate_beats() -> None:
     notes = [_note(t, t + 0.5) for t in (0.0, 0.5, 1.0, 1.5)]
     beats = quantize_notes(notes, _grid())

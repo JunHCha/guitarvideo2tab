@@ -216,6 +216,57 @@ def test_unresolved_string_minus1_is_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test 4b: 실제 파일 라운드트립 — write 를 모킹하지 않고 GP5 를 쓰고 다시 읽는다
+#
+# 다른 테스트들은 guitarpro.write 를 모킹하므로 직렬화 자체는 검증하지 못한다.
+# 현 중복처럼 포맷을 깨뜨리는 버그는 이 테스트로만 잡힌다.
+# ---------------------------------------------------------------------------
+
+def test_written_gp5_can_be_parsed_back(tmp_path: Path) -> None:
+    notes = [
+        # 같은 격자 칸 + 같은 현(1번) 충돌 → 하나만 남아야 파일이 유효하다
+        _note(string=1, fret=3, start=0.0, end=0.4),
+        _note(string=1, fret=8, start=0.0, end=0.4),
+        _note(string=2, fret=5, start=0.0, end=0.4),
+        _note(string=3, fret=7, start=0.0, end=0.4),
+        _note(string=4, fret=2, start=0.5, end=0.9),
+        _note(string=5, fret=0, start=1.0, end=1.4),
+        _note(string=6, fret=12, start=2.5, end=3.0),
+    ]
+    output = tmp_path / "roundtrip.gp5"
+
+    TabWriter(tempo_bpm=120.0).write_gp5(notes, output)
+
+    assert output.exists() and output.stat().st_size > 0
+
+    song = guitarpro.parse(str(output))  # 깨진 파일이면 여기서 GPException
+    assert song.tempo == 120
+    assert len(song.tracks) == 1
+
+    for measure in song.tracks[0].measures:
+        for beat in measure.voices[0].beats:
+            strings = [n.string for n in beat.notes]
+            assert len(strings) == len(set(strings)), f"현 중복: {strings}"
+
+
+def test_written_gp5_roundtrip_with_many_collisions(tmp_path: Path) -> None:
+    """현 충돌이 대량으로 발생하는 실제 파이프라인 형태의 입력."""
+    notes = [
+        _note(string=(i % 6) + 1, fret=i % 13, start=(i % 8) * 0.25, end=(i % 8) * 0.25 + 0.3)
+        for i in range(60)
+    ]
+    output = tmp_path / "collisions.gp5"
+
+    TabWriter(tempo_bpm=100.0).write_gp5(notes, output)
+    song = guitarpro.parse(str(output))
+
+    total_notes = sum(
+        len(b.notes) for m in song.tracks[0].measures for b in m.voices[0].beats
+    )
+    assert total_notes > 0
+
+
+# ---------------------------------------------------------------------------
 # Test 5: returned path equals input path (both methods)
 # ---------------------------------------------------------------------------
 
