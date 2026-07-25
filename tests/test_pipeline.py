@@ -118,8 +118,9 @@ def _stub_pipeline_dependencies(monkeypatch, recorder: dict) -> None:
         def __init__(self, *a, **kw):
             recorder["writer_init"] = (a, kw)
 
-        def write_gpx(self, notes, output_path):
+        def write_gpx(self, notes, output_path, audio_path=None):
             recorder["write_gpx"] = (len(notes), output_path)
+            recorder["write_gpx_audio"] = audio_path
             Path(output_path).write_bytes(b"fake-gpx")
             return output_path
 

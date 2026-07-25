@@ -122,7 +122,8 @@ class Pipeline:
                     stacklevel=2,
                 )
 
-        return self._write_output(notes, output_path)
+        # guitar_wav 를 넘겨 tempo/다운비트를 오디오에서 직접 추정한다.
+        return self._write_output(notes, output_path, guitar_wav)
 
     def _run_audio_path(self, guitar_stem_wav: Path):
         transcriber = BasicPitchTranscriber()
@@ -172,9 +173,9 @@ class Pipeline:
         self._dump_stage("07_notes_fused", notes, elapsed_sec=time.perf_counter() - t0)
         return notes
 
-    def _write_output(self, notes, output_path: Path) -> Path:
+    def _write_output(self, notes, output_path: Path, audio_path: Path | None = None) -> Path:
         writer = TabWriter()
-        return writer.write_gpx(notes, output_path)
+        return writer.write_gpx(notes, output_path, audio_path=audio_path)
 
     # ------------------------------------------------------------------
     # Intermediate dump helpers
